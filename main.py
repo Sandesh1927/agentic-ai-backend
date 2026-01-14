@@ -1,150 +1,42 @@
+import os
+import requests
 from fastapi import FastAPI
-from datetime import datetime
-import time
 
-app = FastAPI(title="Agentic AI Misuse Detection")
+app = FastAPI()
 
-# -----------------------------
-# Scam keywords
-# -----------------------------
-SCAM_KEYWORDS = [
-    "otp", "password", "bank", "account",
-    "blocked", "urgent", "verify", "send", "money"
-]
+HF_API_KEY = os.getenv("HF_API_KEY")
 
-# -----------------------------
-# Agent memory
-# -----------------------------
-agents = {
-    "agent_001": {
-        "risk_score": 10,
-        "status": "SAFE",
-        "last_message": "",
-        "last_time": 0,
-        "repeat_count": 0
-    },
-    "agent_002": {
-        "risk_score": 10,
-        "status": "SAFE",
-        "last_message": "",
-        "last_time": 0,
-        "repeat_count": 0
-    }
+HF_MODEL_URL = (
+    "https://api-inference.huggingface.co/models/"
+    "mrm8488/bert-tiny-finetuned-sms-spam-detection"
+)
+
+headers = {
+    "Authorization": f"Bearer {HF_API_KEY}"
 }
 
-# -----------------------------
-# Incident logs (history)
-# -----------------------------
-incident_logs = []
+@app.post("/detect_sms")
+def detect_sms(message: str):
+    payload = {"inputs": message}
 
-# -----------------------------
-# Keyword risk
-# -----------------------------
-def keyword_risk(message: str):
-    score = 0
-    msg = message.lower()
-    for word in SCAM_KEYWORDS:
-        if word in msg:
-            score += 20
-    return score
+    response = requests.post(
+        HF_MODEL_URL,
+        headers=headers,
+        json=payload,
+        timeout=30
+    )
 
-# -----------------------------
-# Behavior risk
-# -----------------------------
-def behavior_risk(agent_id: str, message: str):
-    agent = agents[agent_id]
-    now = time.time()
-    score = 0
+    result = response.json()
 
-    if now - agent["last_time"] < 5:
-        score += 10
-
-    if message.lower() == agent["last_message"].lower():
-        agent["repeat_count"] += 1
-        score += 10 * agent["repeat_count"]
-    else:
-        agent["repeat_count"] = 0
-
-    agent["last_time"] = now
-    agent["last_message"] = message
-
-    return score
-
-# -----------------------------
-# Risk decay
-# -----------------------------
-def decay_risk(agent_id):
-    if agents[agent_id]["risk_score"] > 10:
-        agents[agent_id]["risk_score"] -= 5
-
-# -----------------------------
-# Status update
-# -----------------------------
-def update_status(agent_id):
-    score = agents[agent_id]["risk_score"]
-
-    if score >= 80:
-        agents[agent_id]["status"] = "BLOCKED"
-    elif score >= 40:
-        agents[agent_id]["status"] = "SUSPICIOUS"
-    else:
-        agents[agent_id]["status"] = "SAFE"
-
-# -----------------------------
-# Log incidents automatically
-# -----------------------------
-def log_incident(agent_id, message):
-    incident_logs.append({
-        "time": datetime.now().isoformat(),
-        "agent_id": agent_id,
-        "message": message,
-        "risk_score": agents[agent_id]["risk_score"],
-        "status": agents[agent_id]["status"]
-    })
-
-# -----------------------------
-# APIs
-# -----------------------------
-@app.get("/")
-def home():
-    return {
-        "message": "Agentic AI Misuse Detection Backend Running",
-        "time": datetime.now()
+    scores = {
+        item["label"]: item["score"]
+        for item in result[0]
     }
 
-@app.get("/agents")
-def get_agents():
-    return agents
-
-@app.get("/incidents")
-def get_incidents():
-    return incident_logs
-
-@app.post("/agent_message/{agent_id}")
-def receive_message(agent_id: str, message: str):
-
-    if agent_id not in agents:
-        return {"error": "Agent not found"}
-
-    k_risk = keyword_risk(message)
-    b_risk = behavior_risk(agent_id, message)
-
-    if k_risk == 0 and b_risk == 0:
-        decay_risk(agent_id)
-    else:
-        agents[agent_id]["risk_score"] += k_risk + b_risk
-
-    update_status(agent_id)
-
-    # Auto log if risky
-    if agents[agent_id]["status"] in ["SUSPICIOUS", "BLOCKED"]:
-        log_incident(agent_id, message)
+    spam_score = scores.get("spam", 0)
 
     return {
-        "agent_id": agent_id,
         "message": message,
-        "keyword_risk": k_risk,
-        "behavior_risk": b_risk,
-        "total_risk": agents[agent_id]["risk_score"],
-        "status": agents[agent_id]["status"]
+        "spam_probability": round(spam_score * 100, 2),
+        "status": "BLOCKED" if spam_score > 0.6 else "SAFE"
     }
